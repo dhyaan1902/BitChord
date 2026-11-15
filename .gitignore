@@ -53,6 +53,7 @@ AGENTS.md
 
 # Electron packaging
 *.AppImage
+*.appimage
 electron/app/
 electron/dist/
 electron/node_modules/

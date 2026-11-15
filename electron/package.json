@@ -1,8 +1,8 @@
 {
-  "name": "bitchord",
+  "name": "bitchord-electron",
   "productName": "BitChord",
   "version": "1.0.0",
-  "description": "BitChord Music Player",
+  "description": "BitChord Music Player Desktop Client",
   "main": "main.js",
   "author": "BitChord Contributors",
   "build": {
@@ -18,10 +18,24 @@
       "category": "AudioVideo",
       "icon": "icon.png"
     },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
     "files": [
       "main.js",
       "preload.js",
       "icon.png",
+      "icon.ico",
       "app/**/*",
       "extension/**/*"
     ]

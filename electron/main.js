@@ -1,7 +1,8 @@
-const { app, BrowserWindow, Menu, session } = require('electron');
+const { app, BrowserWindow, Menu, session, ipcMain, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
+const crypto = require('crypto');
 
 // Suppress security warnings in console
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
@@ -74,7 +75,7 @@ function startServer(appDir) {
       });
     });
 
-    // Try port 5173 first (default trusted origin for BitChord), or fallback to random free port
+    // Listen on 5173 first (BitChord trusted origin), fallback to random port
     server.listen(5173, '127.0.0.1', () => {
       resolve({ server, port: 5173 });
     }).on('error', (err) => {
@@ -89,8 +90,339 @@ function startServer(appDir) {
   });
 }
 
+// Helper to compute SAPISIDHASH for YouTube Music requests
+function getSapisidHash(secret, origin = 'https://music.youtube.com') {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const digest = crypto.createHash('sha1').update(`${timestamp} ${secret} ${origin}`).digest('hex');
+  return `SAPISIDHASH ${timestamp}_${digest}`;
+}
+
+// Renderers parser helper for YouTube responses
+function findRenderers(root, key, out = []) {
+  if (Array.isArray(root)) {
+    for (const item of root) findRenderers(item, key, out);
+  } else if (root && typeof root === 'object') {
+    for (const [k, v] of Object.entries(root)) {
+      if (k === key && v && typeof v === 'object' && !Array.isArray(v)) {
+        out.push(v);
+      } else {
+        findRenderers(v, key, out);
+      }
+    }
+  }
+  return out;
+}
+
+function getText(node) {
+  if (!node) return '';
+  if (node.runs && Array.isArray(node.runs)) {
+    return node.runs.map(r => r.text || '').join('');
+  }
+  return node.simpleText || '';
+}
+
+function getPhoto(item) {
+  if (!item || !item.accountPhoto) return null;
+  const thumbnails = item.accountPhoto.thumbnails;
+  if (Array.isArray(thumbnails) && thumbnails.length > 0) {
+    return thumbnails[thumbnails.length - 1].url || null;
+  }
+  return null;
+}
+
+let cachedAuthState = null;
+let lastAuthCheck = 0;
+let userConnectedPref = true;
+let selectedChannelPref = null;
+
+async function getYouTubeAuthState(refresh = false) {
+  if (!refresh && cachedAuthState && (Date.now() - lastAuthCheck < 60000)) {
+    return cachedAuthState;
+  }
+
+  const cookies = await session.defaultSession.cookies.get({ domain: '.youtube.com' });
+  const sapisidCookie = cookies.find(c => ['SAPISID', '__Secure-3PAPISID', '__Secure-1PAPISID'].includes(c.name));
+
+  if (!sapisidCookie || !sapisidCookie.value) {
+    cachedAuthState = {
+      browserSignedIn: false,
+      connected: false,
+      signedIn: false,
+      accounts: [],
+      active: null,
+      problem: null
+    };
+    lastAuthCheck = Date.now();
+    return cachedAuthState;
+  }
+
+  if (!userConnectedPref) {
+    cachedAuthState = {
+      browserSignedIn: true,
+      connected: false,
+      signedIn: false,
+      accounts: [],
+      active: null,
+      problem: null
+    };
+    lastAuthCheck = Date.now();
+    return cachedAuthState;
+  }
+
+  const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+  const sapisid = sapisidCookie.value;
+
+  try {
+    const hash = getSapisidHash(sapisid, 'https://music.youtube.com');
+    const res = await fetch('https://music.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': hash,
+        'Origin': 'https://music.youtube.com',
+        'Referer': 'https://music.youtube.com/',
+        'X-Origin': 'https://music.youtube.com',
+        'X-Youtube-Client-Name': '67',
+        'X-Youtube-Client-Version': '1.20251006.03.00',
+        'Cookie': cookieString
+      },
+      body: JSON.stringify({
+        context: {
+          client: { clientName: 'WEB_REMIX', clientVersion: '1.20251006.03.00', hl: 'en', gl: 'US' },
+          user: {}
+        }
+      })
+    });
+
+    if (!res.ok) {
+      throw new Error(`account_menu status ${res.status}`);
+    }
+
+    const data = await res.json();
+    const headers = findRenderers(data, 'activeAccountHeaderRenderer');
+    const header = headers[0];
+
+    const name = header ? (getText(header.accountName) || 'YouTube Music') : 'YouTube Music';
+    const email = header ? (getText(header.email) || null) : null;
+    const handle = header ? (getText(header.channelHandle) || null) : null;
+    const avatarUrl = header ? getPhoto(header) : null;
+
+    let channels = [];
+    try {
+      const switcherRes = await fetch('https://music.youtube.com/youtubei/v1/account/accounts_list?prettyPrint=false', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': hash,
+          'Origin': 'https://music.youtube.com',
+          'Referer': 'https://music.youtube.com/',
+          'X-Origin': 'https://music.youtube.com',
+          'X-Youtube-Client-Name': '67',
+          'X-Youtube-Client-Version': '1.20251006.03.00',
+          'Cookie': cookieString
+        },
+        body: JSON.stringify({
+          context: {
+            client: { clientName: 'WEB_REMIX', clientVersion: '1.20251006.03.00', hl: 'en', gl: 'US' },
+            user: {}
+          }
+        })
+      });
+
+      if (switcherRes.ok) {
+        const switcherData = await switcherRes.json();
+        const items = findRenderers(switcherData, 'accountItem');
+        for (const item of items) {
+          const itemText = getText(item.accountName);
+          if (itemText) {
+            channels.push({
+              id: item.pageId ? `0:${item.pageId}` : '0:own',
+              name: itemText,
+              handle: getText(item.channelHandle) || getText(item.accountByline) || null,
+              avatarUrl: getPhoto(item),
+              brand: !!item.pageId
+            });
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore channel switcher errors
+    }
+
+    if (channels.length === 0) {
+      channels.push({
+        id: '0:own',
+        name: name,
+        handle: handle || email,
+        avatarUrl: avatarUrl,
+        brand: false
+      });
+    }
+
+    const activeChannel = channels.find(c => c.id === selectedChannelPref) || channels[0];
+
+    cachedAuthState = {
+      browserSignedIn: true,
+      connected: true,
+      signedIn: true,
+      accounts: [{
+        authUser: '0',
+        name: name,
+        email: email,
+        avatarUrl: avatarUrl,
+        channels: channels
+      }],
+      active: {
+        id: activeChannel.id,
+        name: activeChannel.name,
+        handle: activeChannel.handle,
+        avatarUrl: activeChannel.avatarUrl,
+        brand: activeChannel.brand,
+        authUser: '0'
+      },
+      problem: null
+    };
+    lastAuthCheck = Date.now();
+    return cachedAuthState;
+  } catch (err) {
+    console.warn('Error fetching YouTube account:', err);
+    cachedAuthState = {
+      browserSignedIn: true,
+      connected: true,
+      signedIn: true,
+      accounts: [{
+        authUser: '0',
+        name: 'YouTube Music User',
+        email: null,
+        avatarUrl: null,
+        channels: [{
+          id: '0:own',
+          name: 'YouTube Music User',
+          handle: null,
+          avatarUrl: null,
+          brand: false
+        }]
+      }],
+      active: {
+        id: '0:own',
+        name: 'YouTube Music User',
+        handle: null,
+        avatarUrl: null,
+        brand: false,
+        authUser: '0'
+      },
+      problem: null
+    };
+    lastAuthCheck = Date.now();
+    return cachedAuthState;
+  }
+}
+
 let mainWindow = null;
 let localServer = null;
+let loginWindow = null;
+
+function openLoginWindow(url) {
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    loginWindow.focus();
+    return;
+  }
+
+  loginWindow = new BrowserWindow({
+    width: 600,
+    height: 750,
+    parent: mainWindow,
+    modal: true,
+    title: 'Sign In to YouTube Music - BitChord',
+    autoHideMenuBar: true,
+    backgroundColor: '#1f1f1f',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true,
+      devTools: false
+    }
+  });
+
+  loginWindow.setMenu(null);
+  loginWindow.loadURL(url);
+
+  loginWindow.webContents.on('did-navigate', async (event, newUrl) => {
+    // When Google finishes auth and redirects to music.youtube.com, sign-in is complete!
+    if (newUrl.startsWith('https://music.youtube.com') || newUrl.startsWith('https://www.youtube.com')) {
+      await session.defaultSession.cookies.flushStore();
+      cachedAuthState = null; // Clear cached state
+      setTimeout(() => {
+        if (loginWindow && !loginWindow.isDestroyed()) {
+          loginWindow.close();
+          loginWindow = null;
+        }
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.reload();
+        }
+      }, 1000);
+    }
+  });
+
+  loginWindow.on('closed', () => {
+    loginWindow = null;
+  });
+}
+
+// Register IPC handlers for bridge communication
+ipcMain.handle('get-yt-auth-state', async (event, refresh) => {
+  return await getYouTubeAuthState(refresh);
+});
+
+ipcMain.handle('yt-select-channel', async (event, channelId) => {
+  selectedChannelPref = channelId;
+  return await getYouTubeAuthState(true);
+});
+
+ipcMain.handle('yt-set-connected', async (event, connected) => {
+  userConnectedPref = connected;
+  return await getYouTubeAuthState(true);
+});
+
+ipcMain.handle('yt-fetch', async (event, request) => {
+  const cookies = await session.defaultSession.cookies.get({ domain: '.youtube.com' });
+  const sapisidCookie = cookies.find(c => ['SAPISID', '__Secure-3PAPISID', '__Secure-1PAPISID'].includes(c.name));
+  const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+  const headers = { ...(request.headers || {}) };
+  headers['Origin'] = 'https://music.youtube.com';
+  headers['Referer'] = 'https://music.youtube.com/';
+  headers['X-Origin'] = 'https://music.youtube.com';
+  headers['Cookie'] = cookieString;
+
+  if (sapisidCookie && sapisidCookie.value) {
+    headers['Authorization'] = getSapisidHash(sapisidCookie.value, 'https://music.youtube.com');
+    headers['X-Goog-AuthUser'] = '0';
+  }
+
+  const options = {
+    method: request.method || 'GET',
+    headers: headers
+  };
+  if (request.body && request.method !== 'GET' && request.method !== 'HEAD') {
+    options.body = request.body;
+  }
+
+  const res = await fetch(request.url, options);
+  const text = await res.text();
+  const resHeaders = {};
+  res.headers.forEach((v, k) => {
+    resHeaders[k] = v;
+  });
+
+  return {
+    status: res.status,
+    headers: resHeaders,
+    body: text,
+    bodyEncoding: 'text',
+    url: res.url || request.url
+  };
+});
 
 async function createWindow() {
   // Completely remove default application menu
@@ -161,7 +493,7 @@ async function createWindow() {
     backgroundColor: '#1f1f1f',
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: true,
+      contextIsolation: false, // Ensure preload can bridge cleanly with page
       webSecurity: false,
       devTools: false,
       preload: path.join(__dirname, 'preload.js')
@@ -174,6 +506,16 @@ async function createWindow() {
   // Strictly block developer tools
   mainWindow.webContents.on('devtools-opened', () => {
     mainWindow.webContents.closeDevTools();
+  });
+
+  // Intercept new window creations (Sign In, links, etc.)
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.includes('accounts.google.com') || url.includes('music.youtube.com') || url.includes('youtube.com')) {
+      openLoginWindow(url);
+      return { action: 'deny' };
+    }
+    shell.openExternal(url);
+    return { action: 'deny' };
   });
 
   // Keyboard shortcuts: allow F11 to toggle fullscreen, block DevTools shortcuts
@@ -196,6 +538,11 @@ async function createWindow() {
     mainWindow.show();
   });
 
+  mainWindow.on('close', async () => {
+    // Flush all cookies to disk on exit
+    await session.defaultSession.cookies.flushStore();
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
     if (localServer) {
@@ -208,6 +555,10 @@ async function createWindow() {
 }
 
 app.whenReady().then(createWindow);
+
+app.on('before-quit', async () => {
+  await session.defaultSession.cookies.flushStore();
+});
 
 app.on('window-all-closed', () => {
   if (localServer) {
