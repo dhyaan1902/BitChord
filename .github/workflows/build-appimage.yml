@@ -1,7 +1,7 @@
 name: Build Web AppImage
 
 on:
-  workflow_dispatch: # Allows manual trigger from the Actions tab
+  workflow_dispatch:
 
 jobs:
   build:
@@ -11,34 +11,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 22 & pnpm
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: 'web/pnpm-lock.yaml'
 
-      - name: Enable Corepack & Install Dependencies
-        run: |
-          corepack enable
-          corepack pnpm --dir web install
+      - name: Install Dependencies
+        run: pnpm --dir web install
 
       - name: Build Web App
-        run: |
-          # Build the site using the repository's native build command
-          corepack pnpm --dir web build:site
+        env:
+          # README notes vite build fails without VITE_PARTY_SERVER_URL
+          VITE_PARTY_SERVER_URL: "https://party.bitchord.in"
+        run: pnpm --dir web build:site
 
       - name: Prepare Electron Wrapper for AppImage
         run: |
           mkdir -p electron-wrapper/app
-          
-          # Copy the built web distribution files into the electron app folder
-          # (Based on README, Cloudflare Pages outputs to web/app/dist)
           cp -r web/app/dist/* electron-wrapper/app/
           
           cd electron-wrapper
           npm init -y
           npm install electron electron-builder --save-dev
           
-          # Create a minimal electron main.js entry point
           cat << 'EOF' > main.js
           const { app, BrowserWindow } = require('electron')
           function createWindow () {
@@ -58,7 +60,6 @@ jobs:
           })
           EOF
 
-          # Configure package.json for electron-builder to build a Linux AppImage
           node -e '
             const pkg = require("./package.json");
             pkg.main = "main.js";
