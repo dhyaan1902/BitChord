@@ -34,14 +34,11 @@ window.addEventListener('message', async (event) => {
 
   try {
     switch (req.method) {
-      case 'ping':
-        reply({
-          version: '0.4.4',
-          protocol: 1,
-          browser: 'chromium',
-          capabilities: ['yt', 'yt.auth', 'yt.stats', 'addon', 'lyrics', 'spotify', 'discord']
-        });
+      case 'ping': {
+        const info = await ipcRenderer.invoke('get-extension-info');
+        reply(info);
         break;
+      }
 
       case 'yt.authState': {
         const state = await ipcRenderer.invoke('get-yt-auth-state', req.params && req.params.refresh);

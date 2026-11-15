@@ -135,6 +135,20 @@ let lastAuthCheck = 0;
 let userConnectedPref = true;
 let selectedChannelPref = null;
 
+// Read dynamic extension version from packaged manifest
+let extensionVersion = '0.4.4';
+try {
+  const manifestPath = path.join(__dirname, 'extension', 'manifest.json');
+  if (fs.existsSync(manifestPath)) {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (manifest.version) {
+      extensionVersion = manifest.version;
+    }
+  }
+} catch (e) {
+  // Use fallback version
+}
+
 async function getYouTubeAuthState(refresh = false) {
   if (!refresh && cachedAuthState && (Date.now() - lastAuthCheck < 60000)) {
     return cachedAuthState;
@@ -430,6 +444,15 @@ function openLoginWindow(url) {
 }
 
 // Register IPC handlers for bridge communication
+ipcMain.handle('get-extension-info', () => {
+  return {
+    version: extensionVersion,
+    protocol: 1,
+    browser: 'chromium',
+    capabilities: ['yt', 'yt.auth', 'yt.stats', 'addon', 'lyrics', 'spotify', 'discord']
+  };
+});
+
 ipcMain.handle('get-yt-auth-state', async (event, refresh) => {
   return await getYouTubeAuthState(refresh);
 });
