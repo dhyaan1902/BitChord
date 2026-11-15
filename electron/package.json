@@ -1,0 +1,34 @@
+{
+  "name": "bitchord",
+  "productName": "BitChord",
+  "version": "1.0.0",
+  "description": "BitChord Music Player",
+  "main": "main.js",
+  "author": "BitChord Contributors",
+  "build": {
+    "appId": "com.bitchord.desktop",
+    "productName": "BitChord",
+    "desktopName": "BitChord",
+    "directories": {
+      "output": "dist"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo",
+      "icon": "icon.png",
+      "syncedDesktopName": true
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "icon.png",
+      "app/**/*"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8"
+  }
+}

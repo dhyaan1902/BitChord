@@ -2,6 +2,11 @@ name: Build Web AppImage
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'web/**'
+      - 'electron/**'
+      - '.github/workflows/build-appimage.yml'
 
 jobs:
   build:
@@ -28,58 +33,23 @@ jobs:
 
       - name: Build Web App
         env:
-          # README notes vite build fails without VITE_PARTY_SERVER_URL
           VITE_PARTY_SERVER_URL: "https://party.bitchord.in"
         run: pnpm --dir web build:site
 
-      - name: Prepare Electron Wrapper for AppImage
+      - name: Prepare Electron Wrapper
         run: |
-          mkdir -p electron-wrapper/app
-          cp -r web/app/dist/* electron-wrapper/app/
-          
-          cd electron-wrapper
-          npm init -y
-          npm install electron electron-builder --save-dev
-          
-          cat << 'EOF' > main.js
-          const { app, BrowserWindow } = require('electron')
-          function createWindow () {
-            const win = new BrowserWindow({ 
-              width: 1200, 
-              height: 800,
-              webPreferences: {
-                nodeIntegration: false,
-                contextIsolation: true
-              }
-            })
-            win.loadFile('app/index.html')
-          }
-          app.whenReady().then(createWindow)
-          app.on('window-all-closed', () => {
-            if (process.platform !== 'darwin') app.quit()
-          })
-          EOF
-
-          node -e '
-            const pkg = require("./package.json");
-            pkg.main = "main.js";
-            pkg.build = {
-              appId: "com.bitchord.webdesktop",
-              productName: "BitChord",
-              directories: { output: "dist" },
-              linux: { target: ["AppImage"] },
-              files: ["main.js", "app/**/*"]
-            };
-            require("fs").writeFileSync("package.json", JSON.stringify(pkg, null, 2));
-          '
+          mkdir -p electron/app
+          cp -r web/app/dist/* electron/app/
+          cd electron
+          npm install
 
       - name: Build AppImage with Electron-Builder
         run: |
-          cd electron-wrapper
+          cd electron
           npx electron-builder --linux AppImage --publish never
 
       - name: Upload AppImage Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BitChord-Linux-AppImage
-          path: electron-wrapper/dist/*.AppImage
+          path: electron/dist/*.AppImage
