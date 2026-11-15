@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, session, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, session, ipcMain, shell, Tray, nativeImage } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -321,6 +321,66 @@ async function getYouTubeAuthState(refresh = false) {
 let mainWindow = null;
 let localServer = null;
 let loginWindow = null;
+let tray = null;
+let isQuitting = false;
+
+function createTray() {
+  if (tray) return;
+
+  const iconPath = path.join(__dirname, 'icon.png');
+  let icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : null;
+  if (icon) {
+    icon = icon.resize({ width: 22, height: 22 });
+  }
+
+  try {
+    tray = new Tray(icon || iconPath);
+    tray.setToolTip('BitChord');
+
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: 'Show BitChord',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        }
+      },
+      {
+        label: 'Hide to Tray',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.hide();
+          }
+        }
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit BitChord',
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        }
+      }
+    ]);
+
+    tray.setContextMenu(contextMenu);
+
+    tray.on('click', () => {
+      if (mainWindow) {
+        if (mainWindow.isVisible()) {
+          mainWindow.hide();
+        } else {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      }
+    });
+  } catch (err) {
+    console.warn('Could not initialize system tray:', err);
+  }
+}
 
 function openLoginWindow(url) {
   if (loginWindow && !loginWindow.isDestroyed()) {
@@ -351,7 +411,7 @@ function openLoginWindow(url) {
     // When Google finishes auth and redirects to music.youtube.com, sign-in is complete!
     if (newUrl.startsWith('https://music.youtube.com') || newUrl.startsWith('https://www.youtube.com')) {
       await session.defaultSession.cookies.flushStore();
-      cachedAuthState = null; // Clear cached state
+      cachedAuthState = null;
       setTimeout(() => {
         if (loginWindow && !loginWindow.isDestroyed()) {
           loginWindow.close();
@@ -484,16 +544,18 @@ async function createWindow() {
   mainWindow = new BrowserWindow({
     title: 'BitChord',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
-    width: 1280,
+    width: 1200,
     height: 800,
-    fullscreen: true,
+    minWidth: 800,
+    minHeight: 600,
+    fullscreen: false,
     fullscreenable: true,
     autoHideMenuBar: true,
     show: false,
     backgroundColor: '#1f1f1f',
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: false, // Ensure preload can bridge cleanly with page
+      contextIsolation: false,
       webSecurity: false,
       devTools: false,
       preload: path.join(__dirname, 'preload.js')
@@ -534,12 +596,18 @@ async function createWindow() {
   });
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow.setFullScreen(true);
+    mainWindow.maximize();
     mainWindow.show();
   });
 
-  mainWindow.on('close', async () => {
-    // Flush all cookies to disk on exit
+  // Close to tray behavior: closing window does not quit app and keeps music playing
+  mainWindow.on('close', async (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      await session.defaultSession.cookies.flushStore();
+      mainWindow.hide();
+      return false;
+    }
     await session.defaultSession.cookies.flushStore();
   });
 
@@ -551,21 +619,33 @@ async function createWindow() {
     }
   });
 
+  // Initialize System Tray
+  createTray();
+
   await mainWindow.loadURL(`http://localhost:${port}`);
 }
 
 app.whenReady().then(createWindow);
 
+app.on('activate', () => {
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+});
+
 app.on('before-quit', async () => {
+  isQuitting = true;
   await session.defaultSession.cookies.flushStore();
 });
 
 app.on('window-all-closed', () => {
-  if (localServer) {
-    localServer.close();
-    localServer = null;
-  }
-  if (process.platform !== 'darwin') {
+  // On Linux/Windows with tray, stay running in tray unless explicitly quit
+  if (isQuitting) {
+    if (localServer) {
+      localServer.close();
+      localServer = null;
+    }
     app.quit();
   }
 });
