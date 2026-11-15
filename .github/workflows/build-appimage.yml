@@ -19,9 +19,18 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            builder_args: --linux AppImage
+          - os: windows-latest
+            platform: windows
+            builder_args: --win nsis portable
 
     steps:
       - name: Checkout code
@@ -43,11 +52,13 @@ jobs:
         run: pnpm --dir web install
 
       - name: Build Web App & Extension
+        shell: bash
         env:
           VITE_PARTY_SERVER_URL: "https://party.bitchord.in"
         run: pnpm --dir web build:site
 
       - name: Prepare Electron Bundle
+        shell: bash
         run: |
           mkdir -p electron/app
           cp -r web/app/dist/* electron/app/
@@ -56,26 +67,40 @@ jobs:
           cd electron
           npm install
 
-      - name: Build Linux and Windows Packages
+      - name: Build Desktop Package
+        shell: bash
         run: |
           cd electron
-          npx electron-builder --linux AppImage --win nsis portable --publish never
+          npx electron-builder ${{ matrix.builder_args }} --publish never
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BitChord-Desktop-Packages
+          name: BitChord-${{ matrix.platform }}
           path: |
             electron/dist/*.AppImage
             electron/dist/*.exe
 
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
           name: BitChord Desktop ${{ inputs.tag_name || github.ref_name }}
           files: |
-            electron/dist/*.AppImage
-            electron/dist/*.exe
+            artifacts/**/*.AppImage
+            artifacts/**/*.exe
           generate_release_notes: true
