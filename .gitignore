@@ -52,6 +52,8 @@ AGENTS.md
 .claude/
 
 # Electron packaging
+*.AppImage
 electron/app/
 electron/dist/
 electron/node_modules/
+electron/extension/

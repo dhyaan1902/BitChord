@@ -40,6 +40,8 @@ jobs:
         run: |
           mkdir -p electron/app
           cp -r web/app/dist/* electron/app/
+          mkdir -p electron/extension
+          cp -r web/extension/.output/chrome-mv3/* electron/extension/
           cd electron
           npm install
 

@@ -93,7 +93,7 @@ let mainWindow = null;
 let localServer = null;
 
 async function createWindow() {
-  // Completely remove default application menu (removes File, Edit, View, Toggle DevTools, etc.)
+  // Completely remove default application menu
   Menu.setApplicationMenu(null);
 
   // Set up header rewriting to impersonate YouTube and allow audio stream fetching
@@ -131,6 +131,16 @@ async function createWindow() {
     headers['Access-Control-Expose-Headers'] = ['*'];
     callback({ responseHeaders: headers });
   });
+
+  // Load unpacked Chrome extension if packaged
+  const extensionPath = path.join(__dirname, 'extension');
+  if (fs.existsSync(extensionPath)) {
+    try {
+      await session.defaultSession.loadExtension(extensionPath, { allowFileAccess: true });
+    } catch (err) {
+      console.warn('Failed to load extension into session:', err);
+    }
+  }
 
   // Start internal static server
   const appDir = path.join(__dirname, 'app');
@@ -194,7 +204,7 @@ async function createWindow() {
     }
   });
 
-  await mainWindow.loadURL(`http://127.0.0.1:${port}`);
+  await mainWindow.loadURL(`http://localhost:${port}`);
 }
 
 app.whenReady().then(createWindow);
