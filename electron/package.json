@@ -8,7 +8,6 @@
   "build": {
     "appId": "com.bitchord.desktop",
     "productName": "BitChord",
-    "desktopName": "BitChord",
     "directories": {
       "output": "dist"
     },
@@ -17,8 +16,7 @@
         "AppImage"
       ],
       "category": "AudioVideo",
-      "icon": "icon.png",
-      "syncedDesktopName": true
+      "icon": "icon.png"
     },
     "files": [
       "main.js",
