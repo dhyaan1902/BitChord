@@ -188,3 +188,15 @@ ipcRenderer.on('discord-state-changed', (event, state) => {
     payload: { event: 'discord.state', data: state }
   }, location.origin);
 });
+
+// Ctrl + Mouse Wheel zoom control
+window.addEventListener('wheel', (event) => {
+  if (event.ctrlKey) {
+    event.preventDefault();
+    if (event.deltaY < 0) {
+      ipcRenderer.send('zoom-in');
+    } else if (event.deltaY > 0) {
+      ipcRenderer.send('zoom-out');
+    }
+  }
+}, { passive: false });

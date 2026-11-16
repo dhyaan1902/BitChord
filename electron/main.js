@@ -8,6 +8,69 @@ const discord = require('./discord');
 // Suppress security warnings in console
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
+// Hardware acceleration & GPU rendering optimizations
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
+
+// Auto-detect Wayland on Linux (solves blurry scaling and eliminates XWayland overhead)
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,WaylandWindowDecorations');
+}
+
+// Memory & performance tuning (aggressive V8 garbage collection to minimize RAM usage)
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256');
+app.commandLine.appendSwitch('disable-breakpad');
+app.commandLine.appendSwitch('disable-component-update');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+
+const DEFAULT_ZOOM = 1.15; // 115% default provides a comfortable, readable desktop scale
+
+function getPrefsFilePath() {
+  return path.join(app.getPath('userData'), 'preferences.json');
+}
+
+function loadSavedZoom() {
+  try {
+    const prefsPath = getPrefsFilePath();
+    if (fs.existsSync(prefsPath)) {
+      const data = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+      if (typeof data.zoomFactor === 'number' && data.zoomFactor >= 0.5 && data.zoomFactor <= 3.0) {
+        return data.zoomFactor;
+      }
+    }
+  } catch (e) {}
+  return DEFAULT_ZOOM;
+}
+
+function saveZoom(zoom) {
+  try {
+    const prefsPath = getPrefsFilePath();
+    let data = {};
+    if (fs.existsSync(prefsPath)) {
+      try { data = JSON.parse(fs.readFileSync(prefsPath, 'utf8')); } catch (e) {}
+    }
+    data.zoomFactor = Math.round(zoom * 100) / 100;
+    fs.writeFileSync(prefsPath, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {}
+}
+
+function adjustZoom(delta) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const current = mainWindow.webContents.getZoomFactor();
+  const next = Math.max(0.7, Math.min(2.0, Math.round((current + delta) * 100) / 100));
+  mainWindow.webContents.setZoomFactor(next);
+  saveZoom(next);
+}
+
+function resetZoom() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.setZoomFactor(DEFAULT_ZOOM);
+  saveZoom(DEFAULT_ZOOM);
+}
+
 // MIME types for the local static SPA server
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -65,9 +128,11 @@ function startServer(appDir) {
 
         const ext = path.extname(filePath).toLowerCase();
         const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+        const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=3600';
 
         res.writeHead(200, {
           'Content-Type': contentType,
+          'Cache-Control': cacheControl,
           'Access-Control-Allow-Origin': '*'
         });
 
@@ -372,6 +437,14 @@ function createTray() {
           }
         }
       },
+      {
+        label: 'Zoom',
+        submenu: [
+          { label: 'Zoom In (Ctrl + +)', click: () => adjustZoom(0.05) },
+          { label: 'Zoom Out (Ctrl + -)', click: () => adjustZoom(-0.05) },
+          { label: 'Reset Zoom (Ctrl + 0)', click: () => resetZoom() }
+        ]
+      },
       { type: 'separator' },
       {
         label: 'Quit BitChord',
@@ -491,6 +564,11 @@ ipcMain.handle('discord-presence', (event, params) => {
   discord.setPresence(params && params.track, params && params.options);
   return {};
 });
+
+// Zoom IPC handlers
+ipcMain.on('zoom-in', () => adjustZoom(0.05));
+ipcMain.on('zoom-out', () => adjustZoom(-0.05));
+ipcMain.on('zoom-reset', () => resetZoom());
 
 const STATS_URL_PATTERN = /^https:\/\/(s|music|www)\.youtube\.com\/api\/stats\/(playback|watchtime|atr)(\?|$)/;
 const IDENTITY_HEADERS = ['authorization', 'cookie', 'x-goog-authuser', 'x-goog-pageid', 'x-origin', 'origin', 'referer'];
@@ -707,12 +785,20 @@ async function createWindow() {
       contextIsolation: false,
       webSecurity: false,
       devTools: false,
+      backgroundThrottling: false,
+      spellcheck: false,
       preload: path.join(__dirname, 'preload.js')
     }
   });
 
   // Remove window menu bar
   mainWindow.setMenu(null);
+
+  // Apply saved or default zoom scale once DOM is ready
+  mainWindow.webContents.on('did-finish-load', () => {
+    const savedZoom = loadSavedZoom();
+    mainWindow.webContents.setZoomFactor(savedZoom);
+  });
 
   // Strictly block developer tools
   mainWindow.webContents.on('devtools-opened', () => {
@@ -729,12 +815,33 @@ async function createWindow() {
     return { action: 'deny' };
   });
 
-  // Keyboard shortcuts: allow F11 to toggle fullscreen, block DevTools shortcuts
+  // Keyboard shortcuts: F11 fullscreen, Ctrl + +/-/0 zoom, block DevTools
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F11' && input.type === 'keyDown') {
       mainWindow.setFullScreen(!mainWindow.isFullScreen());
       event.preventDefault();
+      return;
     }
+
+    // Zoom shortcuts (Ctrl + Plus/Equals, Ctrl + Minus, Ctrl + 0)
+    if (input.control && input.type === 'keyDown') {
+      if (input.key === '=' || input.key === '+' || input.key === 'Add') {
+        adjustZoom(0.05);
+        event.preventDefault();
+        return;
+      }
+      if (input.key === '-' || input.key === '_' || input.key === 'Subtract') {
+        adjustZoom(-0.05);
+        event.preventDefault();
+        return;
+      }
+      if (input.key === '0' || input.key === 'Num0') {
+        resetZoom();
+        event.preventDefault();
+        return;
+      }
+    }
+
     // Block F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C
     if (
       (input.key === 'F12' && input.type === 'keyDown') ||
