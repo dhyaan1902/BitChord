@@ -119,17 +119,34 @@ window.addEventListener('message', async (event) => {
         }
 
         const res = await fetch(fetchUrl, options);
-        const text = await res.text();
         const resHeaders = {};
         res.headers.forEach((v, k) => {
           resHeaders[k] = v;
         });
 
+        const contentType = res.headers.get('content-type') || '';
+        const textual = /json|text|javascript|xml|html/.test(contentType) || !contentType;
+        let body;
+        let bodyEncoding = 'text';
+
+        if (textual) {
+          body = await res.text();
+        } else {
+          const buffer = await res.arrayBuffer();
+          let binary = '';
+          const bytes = new Uint8Array(buffer);
+          for (let i = 0; i < bytes.length; i += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+          }
+          body = btoa(binary);
+          bodyEncoding = 'base64';
+        }
+
         reply({
           status: res.status,
           headers: resHeaders,
-          body: text,
-          bodyEncoding: 'text',
+          body: body,
+          bodyEncoding: bodyEncoding,
           url: res.url || fetchUrl
         });
         break;

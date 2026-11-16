@@ -154,10 +154,26 @@ async function getYouTubeAuthState(refresh = false) {
     return cachedAuthState;
   }
 
-  const cookies = await session.defaultSession.cookies.get({ domain: '.youtube.com' });
-  const sapisidCookie = cookies.find(c => ['SAPISID', '__Secure-3PAPISID', '__Secure-1PAPISID'].includes(c.name));
+  const [urlCookies, ytCookies] = await Promise.all([
+    session.defaultSession.cookies.get({ url: 'https://music.youtube.com' }).catch(() => []),
+    session.defaultSession.cookies.get({ domain: '.youtube.com' }).catch(() => [])
+  ]);
 
-  if (!sapisidCookie || !sapisidCookie.value) {
+  const cookieMap = new Map();
+  for (const c of ytCookies) if (c.name && c.value) cookieMap.set(c.name, c.value);
+  for (const c of urlCookies) if (c.name && c.value) cookieMap.set(c.name, c.value);
+  const cookieList = Array.from(cookieMap.entries()).map(([name, value]) => ({ name, value }));
+
+  let sapisid = null;
+  for (const name of ['SAPISID', '__Secure-3PAPISID', '__Secure-1PAPISID']) {
+    const c = cookieList.find(x => x.name === name);
+    if (c) {
+      sapisid = c.value;
+      break;
+    }
+  }
+
+  if (!sapisid) {
     cachedAuthState = {
       browserSignedIn: false,
       connected: false,
@@ -183,8 +199,8 @@ async function getYouTubeAuthState(refresh = false) {
     return cachedAuthState;
   }
 
-  const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-  const sapisid = sapisidCookie.value;
+  const cookieString = cookieList.map(c => `${c.name}=${c.value}`).join('; ');
+  const userAgent = session.defaultSession.getUserAgent();
 
   try {
     const hash = getSapisidHash(sapisid, 'https://music.youtube.com');
@@ -196,8 +212,10 @@ async function getYouTubeAuthState(refresh = false) {
         'Origin': 'https://music.youtube.com',
         'Referer': 'https://music.youtube.com/',
         'X-Origin': 'https://music.youtube.com',
+        'X-Goog-AuthUser': '0',
         'X-Youtube-Client-Name': '67',
         'X-Youtube-Client-Version': '1.20251006.03.00',
+        'User-Agent': userAgent,
         'Cookie': cookieString
       },
       body: JSON.stringify({
@@ -209,7 +227,8 @@ async function getYouTubeAuthState(refresh = false) {
     });
 
     if (!res.ok) {
-      throw new Error(`account_menu status ${res.status}`);
+      const errText = await res.text().catch(() => '');
+      throw new Error(`account_menu HTTP ${res.status}: ${errText.slice(0, 100)}`);
     }
 
     const data = await res.json();
@@ -231,8 +250,10 @@ async function getYouTubeAuthState(refresh = false) {
           'Origin': 'https://music.youtube.com',
           'Referer': 'https://music.youtube.com/',
           'X-Origin': 'https://music.youtube.com',
+          'X-Goog-AuthUser': '0',
           'X-Youtube-Client-Name': '67',
           'X-Youtube-Client-Version': '1.20251006.03.00',
+          'User-Agent': userAgent,
           'Cookie': cookieString
         },
         body: JSON.stringify({
@@ -303,29 +324,10 @@ async function getYouTubeAuthState(refresh = false) {
     cachedAuthState = {
       browserSignedIn: true,
       connected: true,
-      signedIn: true,
-      accounts: [{
-        authUser: '0',
-        name: 'YouTube Music User',
-        email: null,
-        avatarUrl: null,
-        channels: [{
-          id: '0:own',
-          name: 'YouTube Music User',
-          handle: null,
-          avatarUrl: null,
-          brand: false
-        }]
-      }],
-      active: {
-        id: '0:own',
-        name: 'YouTube Music User',
-        handle: null,
-        avatarUrl: null,
-        brand: false,
-        authUser: '0'
-      },
-      problem: null
+      signedIn: false,
+      accounts: [],
+      active: null,
+      problem: err.message || 'Failed to read YouTube Music account'
     };
     lastAuthCheck = Date.now();
     return cachedAuthState;
@@ -467,44 +469,141 @@ ipcMain.handle('yt-set-connected', async (event, connected) => {
   return await getYouTubeAuthState(true);
 });
 
-ipcMain.handle('yt-fetch', async (event, request) => {
-  const cookies = await session.defaultSession.cookies.get({ domain: '.youtube.com' });
-  const sapisidCookie = cookies.find(c => ['SAPISID', '__Secure-3PAPISID', '__Secure-1PAPISID'].includes(c.name));
-  const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+const STATS_URL_PATTERN = /^https:\/\/(s|music|www)\.youtube\.com\/api\/stats\/(playback|watchtime|atr)(\?|$)/;
+const IDENTITY_HEADERS = ['authorization', 'cookie', 'x-goog-authuser', 'x-goog-pageid', 'x-origin', 'origin', 'referer'];
 
-  const headers = { ...(request.headers || {}) };
-  headers['Origin'] = 'https://music.youtube.com';
-  headers['Referer'] = 'https://music.youtube.com/';
-  headers['X-Origin'] = 'https://music.youtube.com';
-  headers['Cookie'] = cookieString;
-
-  if (sapisidCookie && sapisidCookie.value) {
-    headers['Authorization'] = getSapisidHash(sapisidCookie.value, 'https://music.youtube.com');
-    headers['X-Goog-AuthUser'] = '0';
-  }
-
-  const options = {
-    method: request.method || 'GET',
-    headers: headers
-  };
-  if (request.body && request.method !== 'GET' && request.method !== 'HEAD') {
-    options.body = request.body;
-  }
-
-  const res = await fetch(request.url, options);
-  const text = await res.text();
+async function serializeFetchResponse(res, reqUrl) {
   const resHeaders = {};
   res.headers.forEach((v, k) => {
     resHeaders[k] = v;
   });
-
+  const contentType = res.headers.get('content-type') || '';
+  const textual = /json|text|javascript|xml/.test(contentType);
+  let body;
+  let bodyEncoding = 'text';
+  if (textual) {
+    body = await res.text();
+  } else {
+    const arrayBuffer = await res.arrayBuffer();
+    body = Buffer.from(arrayBuffer).toString('base64');
+    bodyEncoding = 'base64';
+  }
   return {
     status: res.status,
     headers: resHeaders,
-    body: text,
-    bodyEncoding: 'text',
-    url: res.url || request.url
+    body,
+    bodyEncoding,
+    url: res.url || reqUrl
   };
+}
+
+ipcMain.handle('yt-fetch', async (event, request) => {
+  const method = (request.method || 'GET').toUpperCase();
+  const reqUrl = request.url;
+
+  // Handle anonymous yt.fetch (e.g. BotGuard GenerateIT at www.youtube.com/api/jnn/)
+  if (!request.auth) {
+    const cleanHeaders = {};
+    for (const [key, value] of Object.entries(request.headers || {})) {
+      if (!IDENTITY_HEADERS.includes(key.toLowerCase())) {
+        cleanHeaders[key] = value;
+      }
+    }
+    cleanHeaders['User-Agent'] = session.defaultSession.getUserAgent();
+
+    let body = request.body;
+    if (body !== undefined && request.bodyEncoding === 'base64') {
+      body = Buffer.from(body, 'base64');
+    }
+
+    const options = {
+      method,
+      headers: cleanHeaders
+    };
+    if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
+      options.body = body;
+    }
+
+    const res = await fetch(reqUrl, options);
+    return await serializeFetchResponse(res, reqUrl);
+  }
+
+  // Handle signed yt.fetch (InnerTube and playback stats reporting)
+  const isStats = STATS_URL_PATTERN.test(reqUrl) && method === 'GET';
+  const urlObj = new URL(reqUrl);
+  const targetOrigin = isStats ? 'https://music.youtube.com' : urlObj.origin;
+
+  // Gather cookies from URL origin and .youtube.com domain
+  const [urlCookies, ytCookies] = await Promise.all([
+    session.defaultSession.cookies.get({ url: targetOrigin }).catch(() => []),
+    session.defaultSession.cookies.get({ domain: '.youtube.com' }).catch(() => [])
+  ]);
+
+  const cookieMap = new Map();
+  for (const c of ytCookies) if (c.name && c.value) cookieMap.set(c.name, c.value);
+  for (const c of urlCookies) if (c.name && c.value) cookieMap.set(c.name, c.value);
+  const cookieList = Array.from(cookieMap.entries()).map(([name, value]) => ({ name, value }));
+
+  // Find signing secret in preferred order
+  let secret = null;
+  for (const name of ['SAPISID', '__Secure-3PAPISID', '__Secure-1PAPISID']) {
+    const c = cookieList.find(x => x.name === name);
+    if (c) {
+      secret = c.value;
+      break;
+    }
+  }
+
+  if (!secret) {
+    return {
+      status: 401,
+      headers: {},
+      body: JSON.stringify({ error: 'unauthenticated', message: 'Not signed in to YouTube Music.' }),
+      bodyEncoding: 'text',
+      url: reqUrl
+    };
+  }
+
+  const authState = await getYouTubeAuthState(false);
+  const active = authState && authState.active;
+  const authUser = (active && active.authUser) ? String(active.authUser) : '0';
+  const pageId = (active && active.brand && active.id) ? active.id.split(':')[1] : null;
+
+  // Filter out any page-sent identity headers to prevent conflicting headers
+  const cleanHeaders = {};
+  for (const [key, value] of Object.entries(request.headers || {})) {
+    if (!IDENTITY_HEADERS.includes(key.toLowerCase())) {
+      cleanHeaders[key] = value;
+    }
+  }
+
+  // Set authoritative identity and YouTube origin headers
+  cleanHeaders['Origin'] = targetOrigin;
+  cleanHeaders['Referer'] = `${targetOrigin}/`;
+  cleanHeaders['X-Origin'] = targetOrigin;
+  cleanHeaders['Authorization'] = getSapisidHash(secret, targetOrigin);
+  cleanHeaders['X-Goog-AuthUser'] = authUser;
+  if (pageId && pageId !== 'own') {
+    cleanHeaders['X-Goog-PageId'] = pageId;
+  }
+  cleanHeaders['Cookie'] = cookieList.map(c => `${c.name}=${c.value}`).join('; ');
+  cleanHeaders['User-Agent'] = session.defaultSession.getUserAgent();
+
+  let body = request.body;
+  if (body !== undefined && request.bodyEncoding === 'base64') {
+    body = Buffer.from(body, 'base64');
+  }
+
+  const options = {
+    method,
+    headers: cleanHeaders
+  };
+  if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
+    options.body = body;
+  }
+
+  const res = await fetch(reqUrl, options);
+  return await serializeFetchResponse(res, reqUrl);
 });
 
 async function createWindow() {
@@ -524,6 +623,10 @@ async function createWindow() {
       headers['Origin'] = 'https://www.youtube.com';
       headers['Referer'] = 'https://www.youtube.com/';
       headers['X-Origin'] = 'https://www.youtube.com';
+    } else if (url.includes('s.youtube.com/api/stats/')) {
+      headers['Origin'] = 'https://music.youtube.com';
+      headers['Referer'] = 'https://music.youtube.com/';
+      headers['X-Origin'] = 'https://music.youtube.com';
     } else if (url.includes('googlevideo.com/')) {
       if (url.includes('c=VISIONOS')) {
         delete headers['Origin'];
