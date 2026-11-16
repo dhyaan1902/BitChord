@@ -12,15 +12,27 @@ process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
+app.commandLine.appendSwitch('enable-native-gpu-memory-buffers');
+app.commandLine.appendSwitch('enable-accelerated-2d-canvas');
+app.commandLine.appendSwitch('enable-accelerated-video-decode');
+app.commandLine.appendSwitch('gpu-rasterization-msaa-sample-count', '0');
+
+// Buttery smooth frame pacing & kinetic scrolling
+app.commandLine.appendSwitch(
+  'enable-features',
+  'CanvasOopRasterization,VaapiVideoDecoder,VaapiIgnoreDriverChecks,SmoothScrolling,ParallelDownloading,OverlayScrollbar' +
+    (process.platform === 'linux' ? ',WaylandWindowDecorations' : '')
+);
+app.commandLine.appendSwitch('disable-features', 'UseChromeOSDirectVideoDecoder');
 
 // Auto-detect Wayland on Linux (solves blurry scaling and eliminates XWayland overhead)
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
-  app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,WaylandWindowDecorations');
+  app.commandLine.appendSwitch('use-gl', 'egl');
 }
 
 // Memory & performance tuning (aggressive V8 garbage collection to minimize RAM usage)
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256 --optimize-for-size --expose-gc');
 app.commandLine.appendSwitch('disable-breakpad');
 app.commandLine.appendSwitch('disable-component-update');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -787,6 +799,7 @@ async function createWindow() {
       devTools: false,
       backgroundThrottling: false,
       spellcheck: false,
+      v8CacheOptions: 'bypassHeatCheck',
       preload: path.join(__dirname, 'preload.js')
     }
   });

@@ -322,9 +322,31 @@
     background-color: var(--pageBG);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeLegibility;
+    text-rendering: auto;
     /* Apple's player is an app, not a document: no rubber-band on the page. */
     overscroll-behavior: none;
+    scroll-behavior: smooth;
+  }
+
+  /* GPU layer promotion for silky smooth 60/120fps scrolling */
+  .overflow-y-auto,
+  .overflow-x-auto {
+    will-change: scroll-position;
+    transform: translateZ(0);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Isolate expensive backdrop blurs onto dedicated GPU compositor textures */
+  [class*='backdrop-filter'] {
+    transform: translateZ(0);
+    backface-visibility: hidden;
+  }
+
+  /* Retained-mode rendering containment for album cards and track rows */
+  .group\/art,
+  .group\/shelf,
+  .group\/row {
+    contain: paint;
   }
 
   #root {

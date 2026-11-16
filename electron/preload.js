@@ -200,3 +200,28 @@ window.addEventListener('wheel', (event) => {
     }
   }
 }, { passive: false });
+
+// Inject high-performance compositor optimizations on document start
+document.addEventListener('DOMContentLoaded', () => {
+  const style = document.createElement('style');
+  style.id = 'bitchord-perf-overrides';
+  style.textContent = `
+    html, body {
+      scroll-behavior: smooth !important;
+      text-rendering: auto !important;
+    }
+    .overflow-y-auto, .overflow-x-auto, [class*="overflow-y-auto"], [class*="overflow-x-auto"] {
+      will-change: scroll-position !important;
+      transform: translateZ(0) !important;
+      -webkit-overflow-scrolling: touch !important;
+    }
+    [class*="backdrop-filter"] {
+      transform: translateZ(0) !important;
+      backface-visibility: hidden !important;
+    }
+    .group\\/art, .group\\/shelf, .group\\/row {
+      contain: paint !important;
+    }
+  `;
+  document.head.appendChild(style);
+});

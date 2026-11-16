@@ -1,7 +1,7 @@
 {
   "name": "bitchord-electron",
   "productName": "BitChord",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "BitChord Music Player Desktop Client",
   "main": "main.js",
   "author": "BitChord Contributors",
