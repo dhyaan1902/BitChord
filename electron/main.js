@@ -3,6 +3,7 @@ const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const crypto = require('crypto');
+const discord = require('./discord');
 
 // Suppress security warnings in console
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
@@ -469,6 +470,28 @@ ipcMain.handle('yt-set-connected', async (event, connected) => {
   return await getYouTubeAuthState(true);
 });
 
+// Register Discord IPC handlers
+ipcMain.handle('discord-state', () => {
+  return discord.getState();
+});
+
+ipcMain.handle('discord-connect', async () => {
+  return await discord.connect(mainWindow);
+});
+
+ipcMain.handle('discord-disconnect', () => {
+  return discord.disconnect();
+});
+
+ipcMain.handle('discord-set-enabled', (event, on) => {
+  return discord.setEnabled(on);
+});
+
+ipcMain.handle('discord-presence', (event, params) => {
+  discord.setPresence(params && params.track, params && params.options);
+  return {};
+});
+
 const STATS_URL_PATTERN = /^https:\/\/(s|music|www)\.youtube\.com\/api\/stats\/(playback|watchtime|atr)(\?|$)/;
 const IDENTITY_HEADERS = ['authorization', 'cookie', 'x-goog-authuser', 'x-goog-pageid', 'x-origin', 'origin', 'referer'];
 
@@ -747,6 +770,13 @@ async function createWindow() {
 
   // Initialize System Tray
   createTray();
+
+  // Initialize Discord Rich Presence
+  discord.init(app.getPath('userData'), (discordState) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('discord-state-changed', discordState);
+    }
+  });
 
   await mainWindow.loadURL(`http://localhost:${port}`);
 }
